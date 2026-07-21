@@ -3,7 +3,8 @@
 <h1 align="center">ComfyUI-FastLoad</h1>
 <h3 align="center">Boost ComfyUI's web UI loading with object caching and gzip compression</h3>
 <img src="./banner.png"/>
-</p> 
+</p>  
+
 **[[📃中文版](./README_zh.md)]** 
 
 ## Installation

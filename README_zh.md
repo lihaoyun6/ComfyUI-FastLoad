@@ -3,7 +3,8 @@
 <h1 align="center">ComfyUI-FastLoad</h1>
 <h3 align="center">通过对象缓存和 Gzip 压缩大幅度加快 ComfyUI 网页端热加载速度</h3>
 <img src="./banner.png"/>
-</p> 
+</p>  
+
 **[[📃English](./README.md)]**     
 
 ## 安装
