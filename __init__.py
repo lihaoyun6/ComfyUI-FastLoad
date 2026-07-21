@@ -58,6 +58,24 @@ def get_nodes_environment_hash():
     for custom_dir in custom_node_paths:
         if os.path.isdir(custom_dir):
             scan_dir(custom_dir, file_list)
+    
+    visited_dirs = set()
+    for type_name, paths_tuple in folder_paths.folder_names_and_paths.items():
+        for base_path in paths_tuple[0]:
+            if not os.path.isdir(base_path):
+                continue
+            for root, dirs, _ in os.walk(base_path, followlinks=True):
+                real_root = os.path.realpath(root)
+                if real_root in visited_dirs:
+                    dirs[:] = []
+                    continue
+                visited_dirs.add(real_root)
+                
+                try:
+                    stat = os.stat(root)
+                    file_list.append(f"dir_{root}_{stat.st_mtime_ns}")
+                except OSError:
+                    pass
             
     for item in sorted(file_list):
         hasher.update(item.encode())
