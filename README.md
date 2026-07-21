@@ -10,7 +10,7 @@
 ## Installation
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/lihaoyun6/FastLoad.git
+git clone https://github.com/lihaoyun6/ComfyUI-FastLoad.git
 ```
 Or install it from the Manager.  
 
