@@ -17,8 +17,7 @@ Or install it from the Manager.
 ## Usage
 You don't need to do anything.  
 It will automatically performs GZ compression of page resources and cache `object_info` on the first access after each time ComfyUI server startup.  
-You will experience a huge speed boost from your second access to ComfyUI.
-
+You will experience a huge speed boost from your second access to ComfyUI.  
 
 ## Credits
 - [ComfyUI](https://github.com/comfyanonymous/ComfyUI) @comfyanonymous  

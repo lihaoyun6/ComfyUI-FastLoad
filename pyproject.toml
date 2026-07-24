@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI-FastLoad"
 description = "Boost ComfyUI's web UI loading with object caching and gzip compression"
-version = "0.0.2"
+version = "0.0.3"
 license = {file = "LICENSE"} 
 classifiers = [
 #     # For OS-independent nodes (works on all operating systems)
