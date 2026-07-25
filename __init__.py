@@ -3,6 +3,7 @@ import gzip
 import time
 import json
 import uuid
+import asyncio
 import hashlib
 import logging
 import traceback
@@ -53,8 +54,10 @@ ENABLE_EXPERIMENTAL_STATIC_CACHE = current_config.get("max_cache", False)
 
 _API_CACHE_STORE = {}
 _STATIC_FILE_CACHE = {}
+_PENDING_VIEW_REQUESTS = {}  # 结构: { cache_key: (asyncio.Event, info_dict) }
+_VIEW_RESPONSE_CACHE = {} 
 _BOOT_SIGNATURE = uuid.uuid4().hex  # 重启即变的唯一签名
-print(_BOOT_SIGNATURE)
+
 EXTS = {".js"}
 IGNORE = {".git", "__pycache__", "node_modules"}
 TARGET_CACHE_ROUTES = {
@@ -156,25 +159,6 @@ async def global_gzip_middleware(request: web.Request, handler):
         if is_static_file or is_allowed_api:
             if request.headers.get("If-None-Match") == _BOOT_SIGNATURE:
                 return web.Response(status=304)
-            
-    # 307 URL 参数规范化重定向 (合并图片重复请求)
-    if request.path in ("/view", "/api/view") and request.method == "GET":
-        query = request.rel_url.query
-        clean_query = {}
-        for key in ("filename", "subfolder", "type", "preview", "channel"):
-            if key in query:
-                clean_query[key] = query[key]
-                
-        if len(query) != len(clean_query):
-            has_cache_buster = True
-        else:
-            has_cache_buster = False
-            
-        sorted_items = sorted(clean_query.items())
-        if has_cache_buster or list(query.items()) != sorted_items or request.path == "/view":
-            canonical_query_str = urllib.parse.urlencode(sorted_items)
-            redirect_url = f"/api/view?{canonical_query_str}"
-            return web.Response(status=307, headers={"Location": redirect_url})
         
     response = await handler(request)
     

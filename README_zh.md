@@ -1,7 +1,7 @@
 #
 <p align="center">
 <h1 align="center">ComfyUI-FastLoad</h1>
-<h3 align="center">通过对象缓存和 Gzip 压缩大幅度加快 ComfyUI 网页端热加载速度</h3>
+<h3 align="center">大幅加快 ComfyUI 网页端热加载速度并提供低带宽网络优化</h3>
 <img src="./banner.png"/>
 </p>  
 

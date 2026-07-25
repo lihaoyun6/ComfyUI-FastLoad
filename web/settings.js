@@ -23,6 +23,17 @@ app.registerExtension({
         });
         
         app.ui.settings.addSetting({
+            id: "FastLoad.ImageMerge",
+            category: ["FastLoad", "More Options", "Merge Image Fetches"],
+            name: "Merge Image Fetches",
+            type: "boolean",
+            defaultValue: false,
+            onChange(value) {
+                if (window.FastLoadConfig) window.FastLoadConfig.setMergeEnabled(value);
+            }
+        });
+        
+        app.ui.settings.addSetting({
             id: "FastLoad.CacheExtensions",
             category: ["FastLoad", "More Options", "Cache Extensions"],
             name: "Cache Extensions",

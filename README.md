@@ -1,7 +1,7 @@
 #
 <p align="center">
 <h1 align="center">ComfyUI-FastLoad</h1>
-<h3 align="center">Boost ComfyUI's web UI loading with object caching and gzip compression</h3>
+<h3 align="center">Boost ComfyUI's web UI loading and add low-bandwidth optimizations</h3>
 <img src="./banner.png"/>
 </p>  
 
