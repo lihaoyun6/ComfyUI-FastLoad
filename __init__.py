@@ -54,8 +54,6 @@ ENABLE_EXPERIMENTAL_STATIC_CACHE = current_config.get("max_cache", False)
 
 _API_CACHE_STORE = {}
 _STATIC_FILE_CACHE = {}
-_PENDING_VIEW_REQUESTS = {}  # 结构: { cache_key: (asyncio.Event, info_dict) }
-_VIEW_RESPONSE_CACHE = {} 
 _BOOT_SIGNATURE = uuid.uuid4().hex  # 重启即变的唯一签名
 
 EXTS = {".js"}
@@ -179,57 +177,70 @@ async def global_gzip_middleware(request: web.Request, handler):
                     new_resp.enable_compression()
                 return new_resp
             
-    # 劫持 2：处理所有其他的 FileResponse（将大体积静态文件内存缓存，并强制 GZIP 压缩）
+    # 劫持 2：处理静态资源 FileResponse（保留自定义 MIME & 后缀判定，强制开启 aiohttp 原生 Chunked GZIP 压缩）
     if request.method == "GET" and isinstance(response, web.FileResponse):
-        skipCaching = False
-        _filepath = getattr(response, '_path', None)
-        if _filepath:
-            filepath = str(_filepath)
+        filepath = getattr(response, '_path', None)
+        if filepath:
+            filepath_str = str(filepath)
+            is_extension_asset = "/extensions/" in filepath_str or "custom_nodes" in filepath_str
             
-            is_extension_asset = "/extensions/" in filepath or "custom_nodes" in filepath
+            # 若开启了旁路插件缓存，走原生流程
             if not ENABLE_EXTENSIONS_CACHE and is_extension_asset:
-                skipCaching = True
+                return response
             
-            if filepath and os.path.exists(filepath):
+            if os.path.exists(filepath):
                 try:
-                    content_type, _ = mimetypes.guess_type(filepath)
+                    # 304 补全 Header 秒回
+                    if ENABLE_EXPERIMENTAL_STATIC_CACHE and request.headers.get("If-None-Match") == _BOOT_SIGNATURE:
+                        return web.Response(
+                            status=304,
+                            headers={
+                                'ETag': _BOOT_SIGNATURE,
+                                'Cache-Control': 'no-cache'
+                            }
+                        )
+                    
+                    # 注入黄金 ETag 和 Cache-Control 标头
+                    if ENABLE_EXPERIMENTAL_STATIC_CACHE:
+                        response.headers['ETag'] = _BOOT_SIGNATURE
+                        response.headers['Cache-Control'] = 'no-cache'
+                        
+                    # 精准 MIME 类型与后缀检测（确保覆盖 .txt 词库、.json 及生僻/无后缀文本）
+                    content_type, _ = mimetypes.guess_type(filepath_str)
                     if not content_type:
                         content_type = response.content_type or 'application/octet-stream'
-            
+                        
                     if content_type and ';' in content_type:
                         content_type = content_type.split(';')[0].strip()
-            
-                    is_compressible = (content_type in COMPRESSIBLE_TYPES) or (filepath.lower().endswith(tuple(STATIC_EXTS)))
-            
+                            
+                    is_compressible = (content_type in COMPRESSIBLE_TYPES) or any(filepath_str.lower().endswith(ext) for ext in STATIC_EXTS)
+                    
+                    # 只要命中我们的可压缩规则，主动命令 aiohttp 开启原生分块 GZIP 压缩 (Transfer-Encoding: chunked)
                     if is_compressible:
-                        stat = os.stat(filepath)
-                        mtime = stat.st_mtime
-            
-                        if ENABLE_EXPERIMENTAL_STATIC_CACHE and not skipCaching:
-                            cache_entry = _STATIC_FILE_CACHE.get(filepath)
-                            if cache_entry and cache_entry[0] == mtime:
-                                gzipped_data, content_type = cache_entry[1], cache_entry[2]
-                            else:
-                                with open(filepath, 'rb') as f:
-                                    raw_data = f.read()
-                                gzipped_data = gzip.compress(raw_data, compresslevel=6)
-                                _STATIC_FILE_CACHE[filepath] = (mtime, gzipped_data, content_type)
-            
-                            headers = {'ETag': _BOOT_SIGNATURE, 'Cache-Control': 'no-cache', 'Content-Encoding': 'gzip'}
-            
-                            if request.headers.get("If-None-Match") == _BOOT_SIGNATURE:
-                                return web.Response(status=304)
-                        else:
-                            with open(filepath, 'rb') as f:
-                                raw_data = f.read()
-                            gzipped_data = gzip.compress(raw_data, compresslevel=6)
-                            headers = {'Content-Encoding': 'gzip'}
-            
-                        new_resp = web.Response(body=gzipped_data, content_type=content_type, headers=headers)
-                        return new_resp
+                        accept_encoding = request.headers.get("Accept-Encoding", "").lower()
+                        if "gzip" in accept_encoding:
+                            response.enable_compression()
+                            
+                    return response
                 except Exception as e:
                     logger.error(f"[FastLoad] Dynamic gzip failed for static asset {filepath}: {e}")
                     
+    # 劫持 3：默认的标准 StreamResponse 兜底逻辑
+    if not isinstance(response, web.StreamResponse):
+        return response
+    
+    if "Content-Encoding" in response.headers:
+        return response
+    
+    is_compressible = (response.content_type in COMPRESSIBLE_TYPES) or (request.path.lower().endswith(tuple(STATIC_EXTS)))
+    if is_compressible:
+        accept_encoding = request.headers.get("Accept-Encoding", "").lower()
+        if "gzip" in accept_encoding:
+            if isinstance(response, web.Response) and getattr(response, "body", None) is not None:
+                response.enable_compression()
+                
+    return response
+                
     # 劫持 3：默认的标准 StreamResponse 兜底逻辑
     if not isinstance(response, web.StreamResponse):
         return response
@@ -256,13 +267,8 @@ async def patched_stream_prepare(self, request):
         return await original_stream_prepare(self, request)
     
     try:
-        # 给已经标准化后的黄金图片响应注入 5 秒强缓存 + ETag 校验
-        if request.path in ("/view", "/api/view"):
-            if "Cache-Control" not in self.headers:
-                self.headers["Cache-Control"] = "public, max-age=5, must-revalidate"
-        
         # 【激进缓存】：给所有文本类静态资源打上启动签名 UUID 和 no-cache 标签
-        elif ENABLE_EXPERIMENTAL_STATIC_CACHE and self.content_type in COMPRESSIBLE_TYPES:
+        if ENABLE_EXPERIMENTAL_STATIC_CACHE and self.content_type in COMPRESSIBLE_TYPES:
             self.headers["ETag"] = _BOOT_SIGNATURE
             self.headers["Cache-Control"] = "no-cache" # 允许浏览器缓存，但每次必须向服务器验证
                     

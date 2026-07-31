@@ -50,7 +50,12 @@ window.fetch = async function (input, init) {
     }
     
     let urlStr = typeof input === 'string' ? input : (input instanceof Request ? input.url : null);
-    const canonical = urlStr ? canonicalizeUrl(urlStr) : null;
+    
+    if (!urlStr || (!urlStr.includes('/view') && !urlStr.includes('/api/view'))) {
+        return originalFetch.apply(this, arguments);
+    }
+    
+    const canonical = canonicalizeUrl(urlStr);
     
     if (canonical && (!init || init.method === 'GET' || !init.method)) {
         if (inflightFetches.has(canonical)) {
@@ -101,6 +106,11 @@ Object.defineProperty(HTMLImageElement.prototype, 'src', {
         this._originalSrc = val;
         
         if (!window.FastLoadConfig.imageMergeEnabled) {
+            originalSetSrc.call(this, val);
+            return;
+        }
+        
+        if (typeof val === 'string' && !val.includes('/view') && !val.includes('/api/view')) {
             originalSetSrc.call(this, val);
             return;
         }
