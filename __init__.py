@@ -53,7 +53,6 @@ ENABLE_EXTENSIONS_CACHE = current_config.get("ext_cache", False)
 ENABLE_EXPERIMENTAL_STATIC_CACHE = current_config.get("max_cache", False)
 
 _API_CACHE_STORE = {}
-_STATIC_FILE_CACHE = {}
 _BOOT_SIGNATURE = uuid.uuid4().hex  # 重启即变的唯一签名
 
 EXTS = {".js"}
@@ -137,8 +136,6 @@ def get_nodes_environment_hash():
 async def global_gzip_middleware(request: web.Request, handler):
     if not ENABLE_FASTLOAD:
         return await handler(request)
-    
-    global _STATIC_FILE_CACHE
     
     # 【激进缓存】：检测到是静态资源类型，直接比对启动 UUID，实现 0 毫秒零读盘 304
     if ENABLE_EXPERIMENTAL_STATIC_CACHE and request.method == "GET":
