@@ -63,7 +63,9 @@ TARGET_CACHE_ROUTES = {
 ALLOWED_API_CACHE_PREFIXES = (
     "/api/global_subgraphs/", "/global_subgraphs/", "/api/pysssss/autocomplete"
 )
-
+NO_CACHE_API_LIST = (
+    "/apps", "/appbuilder/fast_object_info"
+)
 COMPRESSIBLE_TYPES = {
     "text/plain", "text/css", "text/html",
     "text/javascript", "application/javascript", "application/x-javascript",
@@ -145,9 +147,11 @@ async def global_gzip_middleware(request: web.Request, handler):
         is_static_file = ext in STATIC_EXTS and not path.startswith(("/api/", "/internal/"))
         is_allowed_api = path.startswith(ALLOWED_API_CACHE_PREFIXES)
         is_extension_asset = "/extensions/" in path or "custom_nodes" in path
+        nocache_flag = "nocache" in request.query
+        is_nocache_route = request.path in NO_CACHE_API_LIST
         
         # 补全逻辑：如果启用了“解除插件缓存”，且该路径属于插件资源，则将其排除在静态缓存之外
-        if not ENABLE_EXTENSIONS_CACHE and is_extension_asset:
+        if (not ENABLE_EXTENSIONS_CACHE and is_extension_asset) or nocache_flag or is_nocache_route:
             is_static_file = False
             #is_allowed_api = False
             
@@ -180,9 +184,11 @@ async def global_gzip_middleware(request: web.Request, handler):
         if filepath:
             filepath_str = str(filepath)
             is_extension_asset = "/extensions/" in filepath_str or "custom_nodes" in filepath_str
+            nocache_flag = "nocache" in request.query
+            is_nocache_route = request.path in NO_CACHE_API_LIST
             
             # 若开启了旁路插件缓存，走原生流程
-            if not ENABLE_EXTENSIONS_CACHE and is_extension_asset:
+            if (not ENABLE_EXTENSIONS_CACHE and is_extension_asset) or nocache_flag or is_nocache_route:
                 return response
             
             if os.path.exists(filepath):
@@ -315,7 +321,7 @@ def patched_add_routes(self, *args, **kwargs):
                         
                         if request.headers.get('If-None-Match') == current_hash:
                             logger.info(f"[FastLoad] Hit browser ETag for {path_key} ({(time.time() - start_time)*1000:.2f}ms)")
-                            return web.Response(status=304, headers={'ETag': current_hash, 'Cache-Control': 'no-cache'})
+                            return web.Response(status=304)
                         
                         cache_entry = _API_CACHE_STORE.get(path_key)
                         if cache_entry and cache_entry["hash"] == current_hash:
