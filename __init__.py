@@ -314,8 +314,8 @@ def patched_add_routes(self, *args, **kwargs):
                         supports_gzip = "gzip" in accept_encoding
                         
                         if request.headers.get('If-None-Match') == current_hash:
-                            logger.info(f"[FastLoad] Hit browser ETag for {path_key} ({(time.time() - start_time)*1000:.2f}ms)")
-                            return web.Response(status=304)
+                        logger.info(f"[FastLoad] Hit browser ETag for {path_key} ({(time.time() - start_time)*1000:.2f}ms)")
+                        return web.Response(status=304, headers={'ETag': current_hash, 'Cache-Control': 'no-cache'})
                         
                         cache_entry = _API_CACHE_STORE.get(path_key)
                         if cache_entry and cache_entry["hash"] == current_hash:
