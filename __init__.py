@@ -46,7 +46,6 @@ def save_config(config):
     except Exception as e:
         logger.error(f"[FastLoad] Failed to save config.json: {e}")
         
-# 加载当前配置，并赋值到内存全局变量中
 current_config = load_config()
 ENABLE_FASTLOAD = current_config.get("enabled", True)
 ENABLE_EXTENSIONS_CACHE = current_config.get("ext_cache", False)
@@ -64,7 +63,7 @@ ALLOWED_API_CACHE_PREFIXES = (
     "/api/global_subgraphs/", "/global_subgraphs/", "/api/pysssss/autocomplete"
 )
 NO_CACHE_API_LIST = (
-    "/apps", "/appbuilder/fast_object_info"
+    "/api/userdata", "/assets/", "/apps", "/appbuilder/fast_object_info"
 )
 COMPRESSIBLE_TYPES = {
     "text/plain", "text/css", "text/html",
@@ -139,29 +138,30 @@ async def global_gzip_middleware(request: web.Request, handler):
     if not ENABLE_FASTLOAD:
         return await handler(request)
     
-    # 【激进缓存】：检测到是静态资源类型，直接比对启动 UUID，实现 0 毫秒零读盘 304
+    # 修复：防止针对 Vite 前端构件(/assets/)的强行 304 拦截导致模块挂起
     if ENABLE_EXPERIMENTAL_STATIC_CACHE and request.method == "GET":
         path = request.path
         ext = os.path.splitext(path)[1].lower()
         
-        is_static_file = ext in STATIC_EXTS and not path.startswith(("/api/", "/internal/"))
+        is_nocache = ("nocache" in request.query) or any(path.startswith(x) for x in NO_CACHE_API_LIST)
+        if is_nocache:
+            return await handler(request)
+        
+        is_static_file = ext in STATIC_EXTS and not path.startswith(("/api/", "/internal/", "/assets/"))
         is_allowed_api = path.startswith(ALLOWED_API_CACHE_PREFIXES)
         is_extension_asset = "/extensions/" in path or "custom_nodes" in path
-        nocache_flag = "nocache" in request.query
-        is_nocache_route = request.path in NO_CACHE_API_LIST
         
-        # 补全逻辑：如果启用了“解除插件缓存”，且该路径属于插件资源，则将其排除在静态缓存之外
-        if (not ENABLE_EXTENSIONS_CACHE and is_extension_asset) or nocache_flag or is_nocache_route:
+        if not ENABLE_EXTENSIONS_CACHE and is_extension_asset:
             is_static_file = False
-            #is_allowed_api = False
             
         if is_static_file or is_allowed_api:
             if request.headers.get("If-None-Match") == _BOOT_SIGNATURE:
-                return web.Response(status=304)
+                # 修复点：添加必要的 Response Headers 确保浏览器 ES Module 校验通过
+                return web.Response(status=304, headers={'ETag': _BOOT_SIGNATURE, 'Cache-Control': 'no-cache'})
         
     response = await handler(request)
     
-    # 劫持 1：精准篡改补全词库的 no-store 行为，并注入 ETag 黄金标头
+    # 劫持 1：精准篡改补全词库的 no-store 行为
     if ENABLE_EXPERIMENTAL_STATIC_CACHE and ("comfyui-custom-scripts/js/autocompleter.js" in request.path.lower()):
         if isinstance(response, web.FileResponse):
             filepath = getattr(response, '_path', None)
@@ -178,22 +178,19 @@ async def global_gzip_middleware(request: web.Request, handler):
                     new_resp.enable_compression()
                 return new_resp
             
-    # 劫持 2：处理静态资源 FileResponse（保留自定义 MIME & 后缀判定，强制开启 aiohttp 原生 Chunked GZIP 压缩）
+    # 劫持 2：处理静态资源 FileResponse
     if request.method == "GET" and isinstance(response, web.FileResponse):
         filepath = getattr(response, '_path', None)
         if filepath:
             filepath_str = str(filepath)
             is_extension_asset = "/extensions/" in filepath_str or "custom_nodes" in filepath_str
-            nocache_flag = "nocache" in request.query
-            is_nocache_route = request.path in NO_CACHE_API_LIST
+            is_nocache = ("nocache" in request.query) or any(filepath_str.startswith(x) for x in NO_CACHE_API_LIST)
             
-            # 若开启了旁路插件缓存，走原生流程
-            if (not ENABLE_EXTENSIONS_CACHE and is_extension_asset) or nocache_flag or is_nocache_route:
+            if (not ENABLE_EXTENSIONS_CACHE and is_extension_asset) or is_nocache:
                 return response
             
             if os.path.exists(filepath):
                 try:
-                    # 304 补全 Header 秒回
                     if ENABLE_EXPERIMENTAL_STATIC_CACHE and request.headers.get("If-None-Match") == _BOOT_SIGNATURE:
                         return web.Response(
                             status=304,
@@ -203,12 +200,10 @@ async def global_gzip_middleware(request: web.Request, handler):
                             }
                         )
                     
-                    # 注入黄金 ETag 和 Cache-Control 标头
                     if ENABLE_EXPERIMENTAL_STATIC_CACHE:
                         response.headers['ETag'] = _BOOT_SIGNATURE
                         response.headers['Cache-Control'] = 'no-cache'
                         
-                    # 精准 MIME 类型与后缀检测（确保覆盖 .txt 词库、.json 及生僻/无后缀文本）
                     content_type, _ = mimetypes.guess_type(filepath_str)
                     if not content_type:
                         content_type = response.content_type or 'application/octet-stream'
@@ -218,7 +213,6 @@ async def global_gzip_middleware(request: web.Request, handler):
                             
                     is_compressible = (content_type in COMPRESSIBLE_TYPES) or any(filepath_str.lower().endswith(ext) for ext in STATIC_EXTS)
                     
-                    # 只要命中我们的可压缩规则，主动命令 aiohttp 开启原生分块 GZIP 压缩 (Transfer-Encoding: chunked)
                     if is_compressible:
                         accept_encoding = request.headers.get("Accept-Encoding", "").lower()
                         if "gzip" in accept_encoding:
@@ -228,23 +222,7 @@ async def global_gzip_middleware(request: web.Request, handler):
                 except Exception as e:
                     logger.error(f"[FastLoad] Dynamic gzip failed for static asset {filepath}: {e}")
                     
-    # 劫持 3：默认的标准 StreamResponse 兜底逻辑
-    if not isinstance(response, web.StreamResponse):
-        return response
-    
-    if "Content-Encoding" in response.headers:
-        return response
-    
-    is_compressible = (response.content_type in COMPRESSIBLE_TYPES) or (request.path.lower().endswith(tuple(STATIC_EXTS)))
-    if is_compressible:
-        accept_encoding = request.headers.get("Accept-Encoding", "").lower()
-        if "gzip" in accept_encoding:
-            if isinstance(response, web.Response) and getattr(response, "body", None) is not None:
-                response.enable_compression()
-                
-    return response
-                
-    # 劫持 3：默认的标准 StreamResponse 兜底逻辑
+    # 劫持 3：标准 StreamResponse 兜底逻辑
     if not isinstance(response, web.StreamResponse):
         return response
     
@@ -261,7 +239,7 @@ async def global_gzip_middleware(request: web.Request, handler):
     return response
 
 # ======================================================================
-# 核心劫持 2：底层响应准备 (注入 ETag 黄金缓存控制)
+# 核心劫持 2：底层响应准备
 # ======================================================================
 original_stream_prepare = StreamResponse.prepare
 
@@ -270,10 +248,9 @@ async def patched_stream_prepare(self, request):
         return await original_stream_prepare(self, request)
     
     try:
-        # 【激进缓存】：给所有文本类静态资源打上启动签名 UUID 和 no-cache 标签
         if ENABLE_EXPERIMENTAL_STATIC_CACHE and self.content_type in COMPRESSIBLE_TYPES:
             self.headers["ETag"] = _BOOT_SIGNATURE
-            self.headers["Cache-Control"] = "no-cache" # 允许浏览器缓存，但每次必须向服务器验证
+            self.headers["Cache-Control"] = "no-cache"
                     
         elif "Content-Encoding" not in self.headers:
             content_type = getattr(self, 'content_type', '')
@@ -295,7 +272,6 @@ def patched_add_routes(self, *args, **kwargs):
     original_add_routes(self, *args, **kwargs)
     
     try:
-        # 挂载全局中间件
         if global_gzip_middleware not in self.app.middlewares:
             self.app.middlewares.insert(0, global_gzip_middleware)
             logger.info("[FastLoad] Global Gzip & Redirect middleware injected!")
@@ -346,13 +322,11 @@ def patched_add_routes(self, *args, **kwargs):
                         if response.status == 200:
                             raw_data = None
                             
-                            # 1. 处理标准的内存 Response
                             if hasattr(response, 'body') and response.body is not None:
                                 raw_data = response.body
                                 if isinstance(raw_data, str):
                                     raw_data = raw_data.encode('utf-8')
                                     
-                            # 2. 处理文件流 FileResponse (pysssss 等插件使用的方式)
                             elif isinstance(response, web.FileResponse):
                                 filepath = getattr(response, '_path', None)
                                 if filepath and os.path.exists(filepath):
@@ -362,7 +336,6 @@ def patched_add_routes(self, *args, **kwargs):
                                     except Exception as e:
                                         logger.error(f"[FastLoad] Failed to read FileResponse path {filepath}: {e}")
                                         
-                            # 3. 如果成功提取到数据，存入内存并压缩
                             if raw_data is not None:
                                 gzipped_data = gzip.compress(raw_data, compresslevel=6)
                                 content_type = getattr(response, 'content_type', 'application/json')
@@ -371,7 +344,7 @@ def patched_add_routes(self, *args, **kwargs):
                                     "raw": raw_data,
                                     "gzip": gzipped_data,
                                     "hash": current_hash,
-                                    "content_type": content_type # 动态保存正确的 Content-Type
+                                    "content_type": content_type
                                 }
                             
                             raw_mb = len(raw_data) / 1024 / 1024
